@@ -22,6 +22,14 @@ void main() {
       }, 200);
       // 由于使用了相同的缓存key，应该命中缓存，不会重新执行任务，结果与第一个相同
       expect(result2, '100');
+
+      final result3 = await reusableCompute((message) {
+        return cache.putIfAbsent(
+            'key1', objects: [message], () => complexTaskExample(message));
+      }, 300);
+
+      /// 使用了相同的key 但是不同的 objects 会生成不同的 hashCode，所以会重新执行任务
+      expect(result3, '300');
     });
 
     test('compute with isolate exit', () async {
