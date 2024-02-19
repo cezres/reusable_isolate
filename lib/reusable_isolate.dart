@@ -37,19 +37,17 @@ abstract class ReusableIsolate {
 
 class ReusableIsolateImpl extends ReusableIsolate {
   ReusableIsolateImpl._(super.label) : super._() {
-    _resultReceivePort.listen((message) => _onResult(message));
-    _exitReceivePort.listen((message) => _onExit(message));
-    _errorReceivePort.listen((message) => _onError(message));
+    _receivePort.listen((message) => _onResult(message));
   }
 
   Isolate? _isolate;
   SendPort? _sendPort;
   ValueCache? _cache;
   bool _disposed = false;
+  bool _isolateStarted = false;
   final _completers = <int, Completer>{};
-  final _resultReceivePort = ReceivePort();
-  final _exitReceivePort = ReceivePort();
-  final _errorReceivePort = ReceivePort();
+  final _receivePort = ReceivePort();
+  final List<ReusableIsolateTask> _waiting = [];
 
   @override
   Future<R> compute<M, R>(ComputeCallback<M, R> callback, M message) {
@@ -60,7 +58,8 @@ class ReusableIsolateImpl extends ReusableIsolate {
     if (_sendPort != null) {
       _sendPort!.send(task);
     } else {
-      _runIsolate(task);
+      _waiting.add(task);
+      _runIsolate();
     }
 
     return completer.future;
@@ -72,18 +71,18 @@ class ReusableIsolateImpl extends ReusableIsolate {
     if (!_disposed) {
       _disposed = true;
       _isolate?.kill(priority: Isolate.immediate);
-      _resultReceivePort.close();
-      _exitReceivePort.close();
-      _errorReceivePort.close();
+      _receivePort.close();
     }
   }
 
-  void _runIsolate(ReusableIsolateTask task) async {
+  void _runIsolate() async {
+    if (_isolateStarted) {
+      return;
+    }
+    _isolateStarted = true;
     _isolate = await Isolate.spawn(
       _resuableIsolateEntry,
-      ResuableIsolateEntryValues(_resultReceivePort.sendPort, _cache, task),
-      onExit: _exitReceivePort.sendPort,
-      onError: _errorReceivePort.sendPort,
+      ResuableIsolateEntryValues(_receivePort.sendPort, _cache),
       debugName: 'ReusableIsolate',
     );
   }
@@ -91,6 +90,10 @@ class ReusableIsolateImpl extends ReusableIsolate {
   void _onResult(dynamic message) {
     if (message is SendPort) {
       _sendPort = message;
+      for (var element in _waiting) {
+        message.send(element);
+      }
+      _waiting.clear();
     } else if (message is ReusableIsolateResult) {
       final completer = _completers.remove(message.id);
       if (completer != null) {
@@ -100,18 +103,13 @@ class ReusableIsolateImpl extends ReusableIsolate {
           completer.completeError(message.success);
         }
       }
-    }
-  }
-
-  void _onExit(ValueCache? cache) {
-    _sendPort = null;
-    _cache = cache;
-  }
-
-  void _onError(Object error) {
-    _sendPort = null;
-    for (var element in _completers.values) {
-      element.completeError(error);
+    } else if (message is ReusableIsolateExit) {
+      _isolateStarted = false;
+      _sendPort = null;
+      _cache = message.cache;
+      for (var element in _completers.values) {
+        element.completeError('Isolate exited');
+      }
     }
   }
 }
@@ -140,34 +138,44 @@ final class ReusableIsolateResult {
   dynamic encode() => this;
 }
 
-final class ResuableIsolateEntryValues {
-  ResuableIsolateEntryValues(this.sendPort, this.cache, this.task);
-  final SendPort sendPort;
+final class ReusableIsolateExit {
+  ReusableIsolateExit(this.cache);
   final ValueCache? cache;
-  final ReusableIsolateTask task;
 }
 
-Future<ValueCache?> _resuableIsolateEntry(
-    ResuableIsolateEntryValues values) async {
-  final sendPort = values.sendPort;
+final class ResuableIsolateEntryValues {
+  ResuableIsolateEntryValues(this.sendPort, this.cache);
+  final SendPort sendPort;
+  final ValueCache? cache;
+}
 
-  Future runTask(ReusableIsolateTask task) async {
-    try {
-      final result = await task.run();
-      sendPort.send(ReusableIsolateResult(task.id, true, result).encode());
-    } catch (e) {
-      sendPort.send(ReusableIsolateResult(task.id, false, e).encode());
+void _resuableIsolateEntry(ResuableIsolateEntryValues values) async {
+  final receivePort = ReceivePort();
+  final sendPort = values.sendPort;
+  if (values.cache != null) {
+    ValueCache._instance = values.cache;
+  }
+
+  sendPort.send(receivePort.sendPort);
+
+  var lastTaskId = -1;
+  await for (var element in receivePort) {
+    if (element is ReusableIsolateTask) {
+      lastTaskId = element.id;
+      try {
+        final result = await element.run();
+        sendPort.send(ReusableIsolateResult(element.id, true, result).encode());
+      } catch (e) {
+        sendPort.send(ReusableIsolateResult(element.id, false, e).encode());
+      }
+      Future.delayed(const Duration(seconds: 5)).whenComplete(() {
+        if (lastTaskId == element.id) {
+          receivePort.close();
+
+          /// 5 秒后没有新任务则退出 isolate，退出时将缓存返回
+          Isolate.exit(sendPort, ReusableIsolateExit(ValueCache._instance));
+        }
+      });
     }
   }
-
-  final receivePort = ReceivePort();
-  sendPort.send(receivePort.sendPort);
-  await runTask(values.task);
-
-  await for (var element in receivePort) {
-    await runTask(element);
-  }
-
-  /// 在 isolate 退出时将缓存返回
-  return ValueCache._instance;
 }

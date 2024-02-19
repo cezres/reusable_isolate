@@ -3,24 +3,42 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:reusable_isolate/reusable_isolate.dart';
 
 void main() {
-  test('compute', () async {
-    final result = await reusableCompute((message) => message * 10, 2);
-    expect(result, 20);
-  });
+  group('reusableCompute', () {
+    complexTaskExample(int value) => value.toString();
 
-  test('compute with cache', () async {
-    final result1 = await reusableCompute((message) {
-      return cache.putIfAbsent('key1', () => message * 10);
-    }, 2);
-    expect(result1, 20);
+    test('compute', () async {
+      final result = await reusableCompute(complexTaskExample, 100);
+      expect(result, '100');
+    });
 
-    final result2 = await reusableCompute((message) {
-      /// Will hit the cache so no double counting is done
-      return cache.putIfAbsent('key1', () => message * 20);
-    }, 2);
+    test('compute with cache', () async {
+      final result1 = await reusableCompute((message) {
+        return cache.putIfAbsent('key1', () => complexTaskExample(message));
+      }, 100);
+      expect(result1, '100');
 
-    /// The result should be the same as the first one
-    expect(result2, 20);
+      final result2 = await reusableCompute((message) {
+        return cache.putIfAbsent('key1', () => complexTaskExample(message));
+      }, 200);
+      // 由于使用了相同的缓存key，应该命中缓存，不会重新执行任务，结果与第一个相同
+      expect(result2, '100');
+    });
+
+    test('compute with isolate exit', () async {
+      final result1 = await reusableCompute((message) {
+        return cache.putIfAbsent('key1', () => complexTaskExample(message));
+      }, 100);
+      expect(result1, '100');
+
+      // 等待 6 秒后，Isolate 退出
+      await Future.delayed(const Duration(seconds: 6));
+
+      final result2 = await reusableCompute((message) {
+        return cache.putIfAbsent('key1', () => complexTaskExample(message));
+      }, 200);
+      // 即时 Isolate 退出，下次执行任务时缓存依然有效
+      expect(result2, '100');
+    });
   });
 
   group('Test caches', () {

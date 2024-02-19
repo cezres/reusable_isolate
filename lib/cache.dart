@@ -5,6 +5,9 @@ part of 'reusable_isolate.dart';
 ValueCache get cache => ValueCache.instance;
 
 abstract class ValueCache {
+  static ValueCache? _instance;
+  static ValueCache get instance => _instance ??= ValueCacheImpl();
+
   /// 如果缓存中存在 [key] 则返回缓存中的值，否则调用 [ifAbsent] 并将结果存入缓存
   /// [objects] 可选值，用于检查缓存是否有效，使用 [Object.hashAll] 生成 hashCode
   /// [ifAbsent] 生成缓存值的回调
@@ -18,11 +21,7 @@ abstract class ValueCache {
 
   void clear();
 
-  // 重写 [] 操作符
   operator [](String key);
-
-  static ValueCache? _instance;
-  static ValueCache get instance => _instance ??= ValueCacheImpl();
 }
 
 final class ValueCacheImpl extends ValueCache {
