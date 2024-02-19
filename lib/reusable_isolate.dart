@@ -4,20 +4,19 @@ import 'dart:async';
 import 'dart:isolate';
 import 'dart:typed_data';
 
-// import 'package:flutter/foundation.dart' as f;
+import 'package:flutter/foundation.dart';
+
+part 'cache.dart';
 
 /// 后台运行 [callback] 使用提供的 [message] 并返回结果
 /// [label] Isolate 的重用标签
 Future<R> reusableCompute<M, R>(
-  ReusableIsolateCallback<M, R> callback,
+  ComputeCallback<M, R> callback,
   M message, {
   String label = 'default',
 }) {
   return ReusableIsolate(label).compute(callback, message);
 }
-
-typedef ReusableIsolateCallback<M, R> = FutureOr<R> Function(
-    M message, ValueCache cache);
 
 abstract class ReusableIsolate {
   static final Map<String, ReusableIsolate> _reuseableIsolates = {};
@@ -29,7 +28,7 @@ abstract class ReusableIsolate {
   factory ReusableIsolate(String label) =>
       _reuseableIsolates.putIfAbsent(label, () => ReusableIsolateImpl._(label));
 
-  Future<R> compute<M, R>(ReusableIsolateCallback<M, R> callback, M message);
+  Future<R> compute<M, R>(ComputeCallback<M, R> callback, M message);
 
   void dispose() {
     _reuseableIsolates.remove(label);
@@ -53,7 +52,7 @@ class ReusableIsolateImpl extends ReusableIsolate {
   final _errorReceivePort = ReceivePort();
 
   @override
-  Future<R> compute<M, R>(ReusableIsolateCallback<M, R> callback, M message) {
+  Future<R> compute<M, R>(ComputeCallback<M, R> callback, M message) {
     final completer = Completer<R>();
     final task = ReusableIsolateTask(callback, message);
     _completers[task.id] = completer;
@@ -104,7 +103,7 @@ class ReusableIsolateImpl extends ReusableIsolate {
     }
   }
 
-  void _onExit(ValueCache cache) {
+  void _onExit(ValueCache? cache) {
     _sendPort = null;
     _cache = cache;
   }
@@ -117,48 +116,16 @@ class ReusableIsolateImpl extends ReusableIsolate {
   }
 }
 
-abstract class ValueCache {
-  /// 如果缓存中存在 [key] 则返回缓存中的值，否则调用 [ifAbsent] 并将结果存入缓存
-  /// [objects] 可选值，用于检查缓存是否有效，使用 [Object.hashAll] 生成 hashCode
-  /// [ifAbsent] 生成缓存值的回调
-  FutureOr<R> putIfAbsent<R>(
-    String key,
-    FutureOr<R> Function() ifAbsent, {
-    List<Object?>? objects,
-  });
-}
-
-final class ValueCacheImpl extends ValueCache {
-  final Map<String, dynamic> _cache = {};
-  final Map<String, int?> _hashCodes = {};
-
-  @override
-  FutureOr<R> putIfAbsent<R>(String key, FutureOr<R> Function() ifAbsent,
-      {List<Object?>? objects}) async {
-    final hashCode = objects == null ? null : Object.hashAll(objects);
-    if (_cache.containsKey(key)) {
-      if (_hashCodes[key] == hashCode) {
-        // f.debugPrint('cache hit: $key');
-        return _cache[key];
-      }
-    }
-    final value = await ifAbsent();
-    _cache[key] = value;
-    _hashCodes[key] = hashCode;
-    return value;
-  }
-}
-
 int _taskId = 0;
 int get _nextTaskId => _taskId++;
 
 final class ReusableIsolateTask<M, R> {
   ReusableIsolateTask(this.callback, this.message) : id = _nextTaskId;
   final int id;
-  final ReusableIsolateCallback<M, R> callback;
+  final ComputeCallback<M, R> callback;
   final M message;
 
-  FutureOr<R> run(ValueCache cache) => callback(message, cache);
+  FutureOr<R> run() => callback(message);
 
   /// TODO: 支持 TransferableTypedData
   TypedData? encode() => null;
@@ -180,14 +147,13 @@ final class ResuableIsolateEntryValues {
   final ReusableIsolateTask task;
 }
 
-Future<ValueCache> _resuableIsolateEntry(
+Future<ValueCache?> _resuableIsolateEntry(
     ResuableIsolateEntryValues values) async {
   final sendPort = values.sendPort;
-  final cache = values.cache ?? ValueCacheImpl();
 
   Future runTask(ReusableIsolateTask task) async {
     try {
-      final result = await task.run(cache);
+      final result = await task.run();
       sendPort.send(ReusableIsolateResult(task.id, true, result).encode());
     } catch (e) {
       sendPort.send(ReusableIsolateResult(task.id, false, e).encode());
@@ -202,5 +168,6 @@ Future<ValueCache> _resuableIsolateEntry(
     await runTask(element);
   }
 
-  return cache;
+  /// 在 isolate 退出时将缓存返回
+  return ValueCache._instance;
 }

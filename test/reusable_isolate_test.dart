@@ -4,24 +4,20 @@ import 'package:reusable_isolate/reusable_isolate.dart';
 
 void main() {
   test('compute', () async {
-    final result = await reusableCompute((message, cache) => message * 10, 2);
+    final result = await reusableCompute((message) => message * 10, 2);
     expect(result, 20);
   });
 
   test('compute with cache', () async {
-    final result1 = await reusableCompute(
-        (message, cache) =>
-            cache.putIfAbsent('key1', objects: [message], () => message * 10),
-        2);
+    final result1 = await reusableCompute((message) {
+      return cache.putIfAbsent('key1', () => message * 10);
+    }, 2);
     expect(result1, 20);
 
-    final result2 = await reusableCompute(
-      (message, cache) {
-        /// Will hit the cache so no double counting is done
-        return cache.putIfAbsent('key1', () => message * 20);
-      },
-      2,
-    );
+    final result2 = await reusableCompute((message) {
+      /// Will hit the cache so no double counting is done
+      return cache.putIfAbsent('key1', () => message * 20);
+    }, 2);
 
     /// The result should be the same as the first one
     expect(result2, 20);
