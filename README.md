@@ -16,7 +16,7 @@ final result = await reusableCompute(complexTaskExample, 100);
 expect(result, '100');
 ```
 
-#### 执行多个任务并缓存计算结果
+#### 执行多个任务并使用缓存的计算结果
 ```dart
 final result1 = await reusableCompute((message) {
   return cache.putIfAbsent('key1', () => complexTaskExample(message));
